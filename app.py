@@ -1,11 +1,15 @@
 from datetime import date, timedelta
+import hashlib
+import hmac
+from pathlib import Path
+import secrets
 
 import pandas as pd
 import streamlit as st
 
 
-ARCHIVO_DATOS = "transacciones.csv"
-ARCHIVO_PRESUPUESTOS = "presupuestos.csv"
+DIRECTORIO_DATOS = Path("datos_usuarios")
+ARCHIVO_USUARIOS = DIRECTORIO_DATOS / "usuarios.csv"
 
 categorias = [
     "Comidas",
@@ -21,6 +25,97 @@ categorias = [
     "Trabajo",
     "Otros",
 ]
+
+
+def obtener_archivos_usuario(usuario):
+    identificador = hashlib.sha256(usuario.encode("utf-8")).hexdigest()
+    return (
+        DIRECTORIO_DATOS / f"{identificador}_transacciones.csv",
+        DIRECTORIO_DATOS / f"{identificador}_presupuestos.csv",
+    )
+
+
+def cargar_usuarios():
+    try:
+        return pd.read_csv(ARCHIVO_USUARIOS).fillna("").to_dict("records")
+    except (FileNotFoundError, pd.errors.EmptyDataError, pd.errors.ParserError):
+        return []
+
+
+def guardar_usuarios(usuarios):
+    DIRECTORIO_DATOS.mkdir(exist_ok=True)
+    pd.DataFrame(usuarios, columns=["usuario", "sal", "hash"]).to_csv(
+        ARCHIVO_USUARIOS, index=False
+    )
+
+
+def crear_hash_contrasena(contrasena, sal=None):
+    sal = sal or secrets.token_hex(16)
+    hash_contrasena = hashlib.pbkdf2_hmac(
+        "sha256", contrasena.encode("utf-8"), sal.encode("utf-8"), 200_000
+    ).hex()
+    return sal, hash_contrasena
+
+
+def autenticar_usuario(usuario, contrasena):
+    for cuenta in cargar_usuarios():
+        if cuenta["usuario"] != usuario:
+            continue
+        _, hash_calculado = crear_hash_contrasena(contrasena, cuenta["sal"])
+        return hmac.compare_digest(hash_calculado, cuenta["hash"])
+    return False
+
+
+def mostrar_autenticacion():
+    st.title("Organizador de Finanzas Personal")
+    iniciar, registrar = st.tabs(["Iniciar sesion", "Crear cuenta"])
+
+    with iniciar:
+        with st.form("inicio_sesion"):
+            usuario = st.text_input("Usuario")
+            contrasena = st.text_input("Contrasena", type="password")
+            enviar = st.form_submit_button("Iniciar sesion")
+
+        if enviar:
+            usuario = usuario.strip().lower()
+            if autenticar_usuario(usuario, contrasena):
+                st.session_state.usuario = usuario
+                st.rerun()
+            st.error("Usuario o contrasena incorrectos.")
+
+    with registrar:
+        with st.form("registro"):
+            nuevo_usuario = st.text_input("Nuevo usuario")
+            nueva_contrasena = st.text_input("Nueva contrasena", type="password")
+            confirmar = st.text_input("Repite la contrasena", type="password")
+            crear = st.form_submit_button("Crear cuenta")
+
+        if crear:
+            nuevo_usuario = nuevo_usuario.strip().lower()
+            usuarios = cargar_usuarios()
+            nombres = {cuenta["usuario"] for cuenta in usuarios}
+            if not nuevo_usuario or not nueva_contrasena:
+                st.error("Completa el usuario y la contrasena.")
+            elif len(nuevo_usuario) < 3:
+                st.error("El usuario debe tener al menos 3 caracteres.")
+            elif nuevo_usuario in nombres:
+                st.error("Ese usuario ya existe.")
+            elif nueva_contrasena != confirmar:
+                st.error("Las contrasenas no coinciden.")
+            else:
+                sal, hash_contrasena = crear_hash_contrasena(nueva_contrasena)
+                usuarios.append({"usuario": nuevo_usuario, "sal": sal, "hash": hash_contrasena})
+                guardar_usuarios(usuarios)
+                st.session_state.usuario = nuevo_usuario
+                st.rerun()
+
+
+if "usuario" not in st.session_state:
+    mostrar_autenticacion()
+    st.stop()
+
+
+ARCHIVO_DATOS, ARCHIVO_PRESUPUESTOS = obtener_archivos_usuario(st.session_state.usuario)
 
 def mostrar_titulos():
     st.title("Organizador de Finanzas Personal")
